@@ -136,12 +136,16 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
 
   // 원격 업데이트
   //
-  // 새 빌드를 백그라운드로 받아 두고, 한가할 때 업데이트 버튼을 띄운다.
+  // 새 빌드를 백그라운드로 받아 두고,
+  //   - 기기 소유자(device owner)면 한가할 때 사람 손 없이 설치하고
+  //   - 아니면 업데이트 버튼을 띄워 관리자가 설치한다.
   Timer? _updateCheckTimer;
   bool _isCheckingUpdate = false;
   bool _isInstallingUpdate = false;
   UpdateInfo? _readyUpdate; // 받아 두고 설치를 기다리는 빌드
   File? _readyUpdateFile;
+  bool _canAutoInstall = false; // 기기 소유자 → 무인 설치 가능
+  int? _autoInstallFailedBuild; // 무인 설치가 실패한 빌드 → 버튼으로 넘긴다
 
   // 주기
   @override
@@ -152,9 +156,31 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
     // 화면이 올라온 뒤에 고정을 건다. (액티비티가 resumed 상태여야 함)
     WidgetsBinding.instance.addPostFrameCallback((_) {
       KioskService.start();
+      _restoreWorkstationAfterUpdate();
     });
 
     _startUpdateChecks();
+  }
+
+  /// 업데이트 설치 뒤 저절로 다시 켜진 경우, 마지막 조립대 번호로 바로 돌아간다.
+  /// 평소 실행(전원 켜기 · 관리자가 다시 실행)에서는 조립대 설정 화면부터 시작한다.
+  Future<void> _restoreWorkstationAfterUpdate() async {
+    final LaunchInfo info = await KioskService.launchInfo();
+
+    if (!mounted || !info.afterUpdate) return;
+
+    final String? number = info.savedWorkstation;
+
+    if (number == null) {
+      AppLog.w(LogTag.update, '업데이트 뒤 재실행이지만 저장된 조립대 번호가 없음');
+      return;
+    }
+
+    if (_currentStep != DeviceStep.workstationSetup) return;
+
+    AppLog.i(LogTag.update, '업데이트 뒤 재실행 → 조립대 $number 복원');
+
+    _selectWorkstation(number);
   }
 
   /// 사용자가 고정을 풀고 나갔다가 돌아온 경우 다시 고정한다.
@@ -182,6 +208,9 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
   void _selectWorkstation(String number) {
     _stopStationStatusPolling();
     _stopCallTimers();
+
+    // 업데이트 뒤 재실행 때 복원할 수 있게 기기에 남긴다.
+    KioskService.saveWorkstation(number);
 
     _setStep(
       DeviceStep.orderCall,
@@ -375,10 +404,7 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
     if (_isStarting) {
       _noShowPending = true;
 
-      AppLog.w(
-        LogTag.timer,
-        '노쇼 시간 만료, 그런데 QR 인증(start) 요청 중 → 결과를 보고 처리',
-      );
+      AppLog.w(LogTag.timer, '노쇼 시간 만료, 그런데 QR 인증(start) 요청 중 → 결과를 보고 처리');
       return;
     }
 
@@ -637,9 +663,7 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
     final String mbti = data['keycap']?.toString() ?? '';
 
     final List<String> colors =
-        (data['colors'] as List<dynamic>?)
-            ?.map((e) => e.toString())
-            .toList() ??
+        (data['colors'] as List<dynamic>?)?.map((e) => e.toString()).toList() ??
         [];
 
     AppLog.i(LogTag.state, '주문 정보: order=$orderId keycap=$mbti colors=$colors');
@@ -811,6 +835,24 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
       '${UpdateService.checkInterval.inMinutes}분마다 새 버전 확인',
     );
 
+    UpdateService.isDeviceOwner().then((bool owner) {
+      if (!mounted) return;
+
+      _canAutoInstall = owner;
+
+      AppLog.i(
+        LogTag.update,
+        owner ? '기기 소유자 → 새 빌드는 한가할 때 자동 설치' : '기기 소유자 아님 → 관리자가 업데이트 버튼으로 설치',
+      );
+    });
+
+    // 지난 실행에서 무인 설치가 실패했으면 사유만 남긴다.
+    UpdateService.consumeInstallError().then((String? error) {
+      if (error != null) {
+        AppLog.w(LogTag.update, '지난 무인 설치 실패: $error');
+      }
+    });
+
     // 켜지자마자는 네트워크가 늦게 붙는 경우가 있어 조금 뒤에 첫 확인
     Future.delayed(const Duration(seconds: 10), _checkForUpdate);
 
@@ -845,9 +887,10 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
         return;
       }
 
-      // 같은 빌드를 이미 받아 둔 경우
+      // 같은 빌드를 이미 받아 둔 경우 → 한가해졌으면 이번에 설치
       if (_readyUpdate?.buildNumber == info.buildNumber &&
           (await _readyUpdateFile?.exists() ?? false)) {
+        _tryAutoInstall();
         return;
       }
 
@@ -869,11 +912,74 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
         _readyUpdate = info;
         _readyUpdateFile = file;
       });
+
+      _tryAutoInstall();
     } catch (e) {
       AppLog.w(LogTag.update, '업데이트 확인 · 다운로드 실패, 다음 주기에 재시도: $e');
     } finally {
       _isCheckingUpdate = false;
     }
+  }
+
+  /// 기기 소유자면 받아 둔 빌드를 한가할 때 사람 손 없이 설치한다.
+  ///
+  /// 다운로드 직후 · 10분 주기 확인 · 주문이 끝나 한가해졌을 때 불린다.
+  /// 설치가 되면 몇 초 안에 앱이 내려갔다가 새 버전으로 다시 켜지고,
+  /// 실패하면 그 빌드는 업데이트 버튼(관리자 설치)으로 넘긴다.
+  Future<void> _tryAutoInstall() async {
+    final UpdateInfo? info = _readyUpdate;
+    final File? file = _readyUpdateFile;
+
+    if (!_canAutoInstall || info == null || file == null) return;
+    if (!mounted || _isInstallingUpdate || !_isIdle) return;
+    if (_autoInstallFailedBuild == info.buildNumber) return;
+
+    if (!await file.exists()) {
+      AppLog.w(LogTag.update, '받아 둔 APK가 사라짐 → 다음 주기에 다시 받기');
+
+      setState(() {
+        _readyUpdate = null;
+        _readyUpdateFile = null;
+      });
+      return;
+    }
+
+    _isInstallingUpdate = true;
+
+    AppLog.i(
+      LogTag.update,
+      '무인 설치 시작: ${UpdateService.currentBuild} → ${info.label}',
+    );
+
+    try {
+      await UpdateService.installSilently(file);
+    } catch (e) {
+      AppLog.w(LogTag.update, '무인 설치 접수 실패 → 업데이트 버튼으로 전환: $e');
+
+      if (mounted) {
+        setState(() => _autoInstallFailedBuild = info.buildNumber);
+      }
+
+      _isInstallingUpdate = false;
+      return;
+    }
+
+    // 성공하면 그사이 프로세스가 내려간다.
+    // 1분이 지나도 살아 있으면 실패로 보고 사유를 읽는다.
+    await Future.delayed(const Duration(minutes: 1));
+
+    if (!mounted) return;
+
+    final String? error = await UpdateService.consumeInstallError();
+
+    AppLog.w(
+      LogTag.update,
+      '무인 설치가 끝나지 않음 → 업데이트 버튼으로 전환'
+      '${error == null ? '' : ': $error'}',
+    );
+
+    setState(() => _autoInstallFailedBuild = info.buildNumber);
+    _isInstallingUpdate = false;
   }
 
   /// 업데이트 버튼 → 관리자 비밀번호 → 안드로이드 설치 화면
@@ -961,6 +1067,9 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
 
     AppLog.i(LogTag.state, '${prev.name} → ${next.name} ($reason)');
     AppLog.d(LogTag.state, '  ${_stateSnapshot()}');
+
+    // 주문이 끝나 한가해졌으면 미뤄 둔 무인 설치를 진행한다.
+    if (_isIdle) _tryAutoInstall();
   }
 
   /// 현재 상태 한 줄 요약 (디버그용)
@@ -1193,8 +1302,12 @@ class _DeviceRootState extends State<DeviceRoot> with WidgetsBindingObserver {
                       ),
                     ),
 
-                  /// 새 버전을 받아 뒀고 한가할 때만 보이는 업데이트 버튼
-                  if (_readyUpdate != null && _isIdle)
+                  /// 새 버전을 받아 뒀고 한가할 때만 보이는 업데이트 버튼.
+                  /// 무인 설치가 되는 기기에서는 설치가 실패했을 때만 보인다.
+                  if (_readyUpdate != null &&
+                      _isIdle &&
+                      (!_canAutoInstall ||
+                          _autoInstallFailedBuild == _readyUpdate!.buildNumber))
                     Positioned(
                       top: 20,
                       right: 40,

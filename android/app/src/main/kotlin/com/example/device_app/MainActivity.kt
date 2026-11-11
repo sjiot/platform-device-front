@@ -1,6 +1,8 @@
 package com.example.device_app
 
 import android.app.ActivityManager
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Build
@@ -21,8 +23,12 @@ import java.security.MessageDigest
  * 시스템이 확인 창을 한 번 띄운다. 고정 중에는 홈·최근앱이 동작하지 않고,
  * 앱에서 관리자 비밀번호를 통과했을 때만 stopLockTask()로 풀린다.
  *
- * 원격 업데이트(device_app/updater): Dart가 받아 둔 APK의 설치 화면을 연다.
- * 화면 고정 중에는 설치 화면(다른 앱)이 뜰 수 없어서 여기서 먼저 고정을 푼다.
+ * 기기 소유자로 등록돼 있으면(KioskAdminReceiver) 확인 창 없이 바로 고정된다.
+ *
+ * 원격 업데이트(device_app/updater):
+ *   - 기기 소유자면 UpdateInstaller로 사용자 확인 없이 설치한다.
+ *   - 아니면 Dart가 받아 둔 APK의 설치 화면을 연다.
+ *     화면 고정 중에는 설치 화면(다른 앱)이 뜰 수 없어서 여기서 먼저 고정을 푼다.
  */
 class MainActivity : FlutterActivity() {
     private val channelName = "device_app/kiosk"
@@ -37,6 +43,7 @@ class MainActivity : FlutterActivity() {
                     "startLockTask" -> {
                         try {
                             if (!isInLockTaskMode()) {
+                                allowLockTaskIfDeviceOwner()
                                 startLockTask()
                             }
                             result.success(true)
@@ -57,6 +64,19 @@ class MainActivity : FlutterActivity() {
                     }
 
                     "isLocked" -> result.success(isInLockTaskMode())
+
+                    // 앱이 켜질 때 한 번: 업데이트 뒤 재실행인지, 저장된 조립대 번호
+                    "launchInfo" -> result.success(
+                        mapOf(
+                            "afterUpdate" to UpdatePrefs.consumeRelaunchAfterUpdate(this),
+                            "savedWorkstation" to UpdatePrefs.savedWorkstation(this),
+                        )
+                    )
+
+                    "saveWorkstation" -> {
+                        UpdatePrefs.saveWorkstation(this, call.argument<String>("number"))
+                        result.success(true)
+                    }
 
                     else -> result.notImplemented()
                 }
@@ -106,6 +126,32 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
+                    "isDeviceOwner" -> result.success(UpdateInstaller.isDeviceOwner(this))
+
+                    // 기기 소유자 전용 무인 설치. 성공(true)은 설치 세션 commit까지를 뜻한다.
+                    // 실제 결과는 UpdateStatusReceiver → consumeInstallError로 확인한다.
+                    "installApkSilently" -> {
+                        val path = call.argument<String>("path")
+
+                        if (path == null) {
+                            result.error("BAD_ARGS", "path가 없음", null)
+                        } else {
+                            Thread {
+                                try {
+                                    UpdateInstaller.installSilently(this, File(path))
+                                    runOnUiThread { result.success(true) }
+                                } catch (e: Exception) {
+                                    Log.e("DeviceAppUpdater", "무인 설치 실패", e)
+                                    runOnUiThread {
+                                        result.error("SILENT_INSTALL_FAILED", e.message, null)
+                                    }
+                                }
+                            }.start()
+                        }
+                    }
+
+                    "consumeInstallError" -> result.success(UpdatePrefs.consumeInstallError(this))
+
                     else -> result.notImplemented()
                 }
             }
@@ -139,6 +185,24 @@ class MainActivity : FlutterActivity() {
                 Log.e("DeviceAppUpdater", "설치 화면 열기 실패", e)
             }
         }, 500)
+    }
+
+    /**
+     * 기기 소유자면 이 앱을 화면 고정 허용 목록에 올린다.
+     * 그래야 startLockTask()가 확인 창 없이 바로 고정되고,
+     * 업데이트 뒤 자동 재실행 때도 사람 손이 필요 없다.
+     */
+    private fun allowLockTaskIfDeviceOwner() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+
+        if (!dpm.isDeviceOwnerApp(packageName)) return
+
+        try {
+            val admin = ComponentName(this, KioskAdminReceiver::class.java)
+            dpm.setLockTaskPackages(admin, arrayOf(packageName))
+        } catch (e: Exception) {
+            Log.w("DeviceAppKiosk", "화면 고정 허용 목록 설정 실패", e)
+        }
     }
 
     private fun sha256Of(file: File): String {

@@ -18,19 +18,40 @@ samples, guidance on mobile development, and a full API reference.
 
 ## 원격 업데이트
 
-`front_device` 브랜치에 push하면 GitHub Actions(`.github/workflows/device-app-release.yml`)가
+`main` 브랜치에 push하면 GitHub Actions(`.github/workflows/device-app-release.yml`)가
 릴리즈 키로 서명한 APK를 빌드해 Releases의 `device-app-latest`에 APK와 `version.json`을 올린다.
 
 기기 앱은 10분마다 `version.json`을 확인하고, 새 빌드가 있으면 APK를 백그라운드로 받아 둔다.
-주문이 없을 때 오른쪽 위에 **새 버전 업데이트** 버튼이 뜨고, 관리자 비밀번호를 넣으면
-화면 고정을 풀고 안드로이드 설치 화면이 열린다. **업데이트 → 열기**를 누르면 끝.
 
-- 처음 한 번은 기기마다 "이 출처 허용"(출처를 알 수 없는 앱 설치)을 켜야 한다.
+- **기기 소유자(device owner)로 등록된 기기**: 주문을 처리하지 않는 한가한 때 사람 손 없이 설치하고,
+  설치가 끝나면 앱이 저절로 다시 켜져 마지막 조립대 번호로 돌아간다. 화면 고정 확인 창도 뜨지 않는다.
+- **등록되지 않은 기기**: 주문이 없을 때 오른쪽 위에 **새 버전 업데이트** 버튼이 뜨고, 관리자 비밀번호를 넣으면
+  화면 고정을 풀고 안드로이드 설치 화면이 열린다. **업데이트 → 열기**를 누르면 끝.
+  처음 한 번은 기기마다 "이 출처 허용"(출처를 알 수 없는 앱 설치)을 켜야 한다.
+
+참고
+
 - 업데이트 확인은 CI 빌드에만 켜진다. (`--dart-define=BUILD_NUMBER`, `UPDATE_MANIFEST_URL`)
   `flutter run`이나 로컬에서 직접 빌드한 APK는 확인하지 않는다.
-- 빌드 번호는 `100 + 워크플로 실행 번호`. pubspec의 `version`은 표시용 이름만 쓴다.
+- 빌드 번호는 `200 + 워크플로 실행 번호`. pubspec의 `version`은 표시용 이름만 쓴다.
+  (이전 저장소 sjiot/platform-backend에서 올린 마지막 빌드가 104라 그보다 크게 잡았다)
 
-필요한 Secrets (Settings → Secrets and variables → Actions)
+### 기기 처음 세팅 (3대 공통)
+
+USB 디버깅을 켠 기기를 연결하고 `tools/deploy_devices.sh`를 실행하면
+연결된 모든 기기에 최신 CI 빌드를 설치하고 기기 소유자로 등록한 뒤 앱을 켠다.
+
+```bash
+tools/deploy_devices.sh            # Releases의 최신 APK를 받아 설치
+tools/deploy_devices.sh path/to.apk  # 지정한 APK 설치
+```
+
+- 기기 소유자 등록(`dpm set-device-owner`)은 기기에 **계정(구글 계정 등)이 하나도 없어야** 된다.
+  이미 계정이 있으면 설정 → 계정에서 모두 지우고 다시 실행하거나, 등록 없이 수동 업데이트 방식으로 쓴다.
+- 해제하려면 `adb shell dpm remove-active-admin com.example.device_app/.KioskAdminReceiver`
+  (앱이 기기 소유자인 동안에는 일반 삭제가 막히므로, 지우기 전에 해제해야 한다.)
+
+### 필요한 Secrets (Settings → Secrets and variables → Actions)
 
 | 이름 | 값 |
 | --- | --- |

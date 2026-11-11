@@ -1,9 +1,10 @@
 # DeviceApp 원격 업데이트용 빌드
 #
-# front_device 브랜치에 push하면
+# main 브랜치에 push하면
 #   1. 릴리즈 키로 서명한 APK를 빌드하고
 #   2. Releases의 device-app-latest(프리릴리즈)에 APK와 version.json을 올린다.
-# 기기에 깔린 앱은 version.json을 10분마다 확인해 새 빌드를 받아 둔다.
+# 기기에 깔린 앱은 version.json을 10분마다 확인해 새 빌드를 받아 두고,
+# 기기 소유자(device owner)로 등록된 기기에서는 한가할 때 스스로 설치한다.
 # (lib/services/update_service.dart)
 #
 # 필요한 저장소 Secrets (Settings → Secrets and variables → Actions)
@@ -15,7 +16,7 @@ name: DeviceApp release
 
 on:
   push:
-    branches: [front_device]
+    branches: [main]
     paths-ignore:
       - '**.md'
   workflow_dispatch:
@@ -32,8 +33,9 @@ env:
   FLUTTER_VERSION: 3.44.8
   RELEASE_TAG: device-app-latest
   KEY_ALIAS: my-key
-  # 지금 기기에 깔린 APK는 빌드 번호 1. 그보다 항상 크게 시작한다.
-  BUILD_OFFSET: 100
+  # 이전 저장소(sjiot/platform-backend)에서 올린 마지막 빌드가 104.
+  # 이 저장소의 run 번호는 1부터 다시 시작하므로 그보다 항상 크게 시작한다.
+  BUILD_OFFSET: 200
 
 jobs:
   build:
@@ -114,7 +116,7 @@ jobs:
               --target "$GITHUB_SHA" \
               --prerelease \
               --title "DeviceApp 최신 빌드 (자동 업데이트용)" \
-              --notes "front_device 브랜치에 push하면 GitHub Actions가 자동으로 갱신합니다. 기기 앱은 version.json을 보고 업데이트합니다."
+              --notes "main 브랜치에 push하면 GitHub Actions가 자동으로 갱신합니다. 기기 앱은 version.json을 보고 업데이트합니다."
           fi
 
           # APK를 먼저 올리고 version.json을 나중에 바꿔야

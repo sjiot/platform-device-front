@@ -58,13 +58,17 @@ class UpdateInfo {
 
 /// 원격 자동 업데이트.
 ///
-/// 1. front_device 브랜치에 push하면 GitHub Actions가 APK를 빌드해
+/// 1. main 브랜치에 push하면 GitHub Actions가 APK를 빌드해
 ///    Releases의 `device-app-latest`에 APK와 version.json을 올린다.
 ///    (.github/workflows/device-app-release.yml)
 /// 2. 앱은 [checkInterval]마다 version.json을 보고, 지금보다 빌드 번호가 크면
 ///    APK를 백그라운드로 받아 둔다.
-/// 3. 설치는 관리자가 업데이트 버튼 + 비밀번호로 시작한다.
-///    (안드로이드는 일반 앱이 사용자 확인 없이 설치하는 것을 막기 때문)
+/// 3. 설치
+///    - 기기 소유자(device owner)로 등록된 기기([isDeviceOwner]):
+///      주문을 처리하지 않는 한가한 때 [installSilently]로 사람 손 없이 설치하고,
+///      설치가 끝나면 네이티브 PackageReplacedReceiver가 앱을 다시 켠다.
+///    - 아니면 관리자가 업데이트 버튼 + 비밀번호로 [install]을 시작한다.
+///      (안드로이드는 일반 앱이 사용자 확인 없이 설치하는 것을 막기 때문)
 ///
 /// BUILD_NUMBER · UPDATE_MANIFEST_URL은 CI 빌드에만 `--dart-define`으로 들어가므로
 /// `flutter run`이나 로컬 수동 빌드에서는 업데이트 확인이 꺼져 있다.
@@ -146,9 +150,7 @@ class UpdateService {
       int received = 0;
 
       try {
-        await for (final List<int> chunk in res.stream.timeout(
-          _stallTimeout,
-        )) {
+        await for (final List<int> chunk in res.stream.timeout(_stallTimeout)) {
           sink.add(chunk);
           received += chunk.length;
         }
@@ -202,6 +204,37 @@ class UpdateService {
   /// 취소하고 돌아오면 resumed 처리에서 다시 고정한다.
   static Future<void> install(File apk) async {
     await _channel.invokeMethod<bool>('installApk', {'path': apk.path});
+  }
+
+  /// 이 앱이 기기 소유자(device owner)로 등록돼 있는지.
+  /// 등록돼 있어야 사용자 확인 없이 설치할 수 있다.
+  static Future<bool> isDeviceOwner() async {
+    if (kIsWeb || !Platform.isAndroid) return false;
+
+    try {
+      return await _channel.invokeMethod<bool>('isDeviceOwner') ?? false;
+    } catch (e) {
+      AppLog.w(LogTag.update, '기기 소유자 여부 조회 실패: $e');
+      return false;
+    }
+  }
+
+  /// 기기 소유자 전용 무인 설치.
+  ///
+  /// 돌아오면 설치 세션이 접수된 것이고, 성공하면 몇 초 안에 앱이 종료됐다가
+  /// 새 버전으로 다시 켜진다. 실패하면 사유가 [consumeInstallError]로 남는다.
+  static Future<void> installSilently(File apk) async {
+    await _channel.invokeMethod<bool>('installApkSilently', {'path': apk.path});
+  }
+
+  /// 지난 무인 설치가 실패했으면 그 사유를 돌려주고 지운다. 없으면 null.
+  static Future<String?> consumeInstallError() async {
+    try {
+      return await _channel.invokeMethod<String>('consumeInstallError');
+    } catch (e) {
+      AppLog.w(LogTag.update, '설치 오류 조회 실패: $e');
+      return null;
+    }
   }
 
   static Future<Directory> _updateDir() async {
