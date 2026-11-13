@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+/// 카메라 미리보기 좌우 반전 설정. 앱을 종료하기 전까지 유지된다.
+final ValueNotifier<bool> cameraMirrored = ValueNotifier<bool>(false);
+
 class QrScannerScreen extends StatefulWidget {
   const QrScannerScreen({super.key});
 
@@ -46,9 +49,15 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
         child: Stack(
           children: [
             Positioned.fill(
-              child: MobileScanner(
-                controller: _scannerController,
-                onDetect: _handleBarcode,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: cameraMirrored,
+                builder: (context, mirrored, child) {
+                  return Transform.flip(flipX: mirrored, child: child);
+                },
+                child: MobileScanner(
+                  controller: _scannerController,
+                  onDetect: _handleBarcode,
+                ),
               ),
             ),
 
@@ -61,6 +70,21 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
                 },
                 icon: const Icon(Icons.arrow_back),
                 label: const Text('돌아가기'),
+              ),
+            ),
+
+            Positioned(
+              top: 20,
+              right: 20,
+              child: ValueListenableBuilder<bool>(
+                valueListenable: cameraMirrored,
+                builder: (context, mirrored, _) {
+                  return FilledButton.tonalIcon(
+                    onPressed: () => cameraMirrored.value = !mirrored,
+                    icon: const Icon(Icons.flip),
+                    label: Text(mirrored ? '좌우 반전 켬' : '좌우 반전 끔'),
+                  );
+                },
               ),
             ),
 
