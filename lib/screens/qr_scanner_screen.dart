@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
 /// 카메라 미리보기 좌우 반전 설정. 앱을 종료하기 전까지 유지된다.
-final ValueNotifier<bool> cameraMirrored = ValueNotifier<bool>(false);
+final ValueNotifier<bool> cameraMirrored = ValueNotifier<bool>(true);
 
 class QrScannerScreen extends StatefulWidget {
   const QrScannerScreen({super.key});
