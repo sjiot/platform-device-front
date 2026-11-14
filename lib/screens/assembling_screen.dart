@@ -30,7 +30,7 @@ class AssemblingScreen extends StatefulWidget {
 class _AssemblingScreenState extends State<AssemblingScreen> {
   /// 조립 중 화면을 유지하는 최대 시간
   /// static const Duration _assemblyTimeout = Duration(minutes: 5);
-  static const Duration _assemblyTimeout = Duration(seconds: 30);
+  static const Duration _assemblyTimeout = Duration(seconds: 60);
 
   Timer? _assemblyTimer;
 
